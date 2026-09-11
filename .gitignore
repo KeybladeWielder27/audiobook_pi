@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+venv/
+settings.json
+library_cache.json
+state.json
+audiobooks/
