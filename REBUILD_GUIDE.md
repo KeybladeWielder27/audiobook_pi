@@ -159,7 +159,13 @@ Reboot, then verify with `aplay -l` (should show `sndrpihifiberry`) and
 actually running, vs. mid-boot or crashed):
 | Pi Pin | RP2040 Pin |
 |---|---|
-| GPIO24 (physical pin 18) | GP8 |
+| GPIO24 (physical pin 18) | GP10 |
+
+**Optional: KCX_BT_EMITTER bridge** — the Pi has no free hardware UART of
+its own, so the RP2040 relays AT commands to this module over its own
+second UART (UART1), rather than adding a USB adapter. See Part B3 below
+for the RP2040-side wiring; nothing changes on the Pi side beyond the
+`bt_emitter.py` module talking over the existing UART0 link.
 
 ### A5 — Deploy the code
 
@@ -288,6 +294,27 @@ Via Thonny, upload these files to the RP2040's root filesystem:
 Power cycle. You should see the animated splash screen immediately, even
 with no Pi connected — that's the RP2040 operating independently while it
 waits for a ready signal.
+
+### B4 — Optional: KCX_BT_EMITTER bridge
+
+The KCX_BT_EMITTER's UART pins run at 5V TTL logic, while the RP2040 is
+3.3V — a level shifter is required between them, not a direct wire.
+
+| KCX_BT_EMITTER Pin | Connects to |
+|---|---|
+| RX | RP2040 GP8 (via level shifter, low side to RP2040, high side to module) |
+| TX | RP2040 GP9 (via level shifter) |
+| GND | Common ground |
+
+This uses the RP2040's second hardware UART (UART1), completely
+independent of the UART0 link to the Pi — no conflict between display
+traffic and BT commands. On the Pi side, `bt_emitter.py` sends AT commands
+and reads responses over the *existing* Pi↔RP2040 link; the RP2040 firmware
+relays them to/from the module transparently.
+
+Verify the default baud rate in `main.py`'s `bt_uart = UART(1, ...)` line
+matches your specific module (9600 is a common default for this class of
+device, but confirm against your module's documentation).
 
 ---
 

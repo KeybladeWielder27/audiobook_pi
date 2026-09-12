@@ -84,3 +84,33 @@ def draw_now_playing(book, position, duration, chapter_title, chapter_index,
 
 def set_backlight(percent: int):
     _send(f"BACKLIGHT|{percent}")
+
+
+_rx_buffer = b""
+
+
+def send_bt_at(command: str):
+    """Sends an AT command to be relayed to the BT module by the RP2040
+    (the Pi has no free hardware UART of its own for this)."""
+    _send(f"BTAT|{_sanitize(command)}")
+
+
+def poll_bt_response():
+    """Non-blocking: returns the next BT module response line if one has
+    arrived over the shared UART link, or None. The RP2040 tags these
+    'BTRESP|...' so they're never confused with its own (nonexistent)
+    outgoing screen traffic -- we only ever send to it, never receive,
+    except for this one case."""
+    global _rx_buffer
+    try:
+        ser = _get_serial()
+        if ser.in_waiting:
+            _rx_buffer += ser.read(ser.in_waiting)
+    except Exception:
+        return None
+    while b"\n" in _rx_buffer:
+        line, _rx_buffer = _rx_buffer.split(b"\n", 1)
+        text = line.decode(errors="ignore").strip()
+        if text.startswith("BTRESP|"):
+            return text[len("BTRESP|"):]
+    return None

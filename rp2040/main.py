@@ -22,7 +22,12 @@ buf = bytearray(WIDTH * HEIGHT * 2)
 fb = framebuf.FrameBuffer(buf, WIDTH, HEIGHT, framebuf.RGB565)
 
 uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1))
-ready_pin = Pin(8, Pin.IN, Pin.PULL_DOWN)
+ready_pin = Pin(10, Pin.IN, Pin.PULL_DOWN)
+
+# UART1: bridge to the KCX_BT_EMITTER module (via a 3.3V<->5V level shifter).
+# Baud rate should match whatever the module actually uses -- 9600 is the
+# common default for this class of AT-command BT module, adjust if needed.
+bt_uart = UART(1, baudrate=9600, tx=Pin(8), rx=Pin(9))
 
 
 def rgb(r, g, b):
@@ -59,7 +64,7 @@ def text_width(text, scale=2):
     return len(text) * 8 * scale
 
 
-ROW_HEIGHT = 30
+ROW_HEIGHT = 44  # tall enough for up to 2 wrapped lines per item
 TEXT_SCALE = 2
 CHAR_W = 8 * TEXT_SCALE
 MAX_CHARS_PER_ROW = WIDTH // CHAR_W  # ~20 at scale 2
@@ -83,24 +88,64 @@ def draw_list(selected_index, items):
         top = selected_index - visible_rows + 1
     for row, idx in enumerate(range(top, min(len(items), top + visible_rows))):
         y = row * ROW_HEIGHT
-        label = items[idx][:MAX_CHARS_PER_ROW]
+        lines = wrap_text(items[idx], MAX_CHARS_PER_ROW, max_lines=2)
         if idx == selected_index:
             fb.fill_rect(0, y, WIDTH, ROW_HEIGHT, ACCENT)
-            text_scaled(label, 6, y + 6, BLACK, TEXT_SCALE)
+            text_color = BLACK
         else:
-            text_scaled(label, 6, y + 6, WHITE, TEXT_SCALE)
+            text_color = WHITE
+        ty = y + 6
+        for line in lines:
+            text_scaled(line, 6, ty, text_color, TEXT_SCALE)
+            ty += 18
     display.blit(buf)
+
+
+def wrap_text(text, max_chars, max_lines=2):
+    """Wraps text to whole words, up to max_lines. If there's leftover text
+    beyond that, the last line is truncated with an ellipsis."""
+    words = text.split()
+    lines = []
+    current = ""
+    i = 0
+    while i < len(words) and len(lines) < max_lines:
+        word = words[i]
+        candidate = current + (" " if current else "") + word
+        if len(candidate) <= max_chars:
+            current = candidate
+            i += 1
+        elif current:
+            lines.append(current)
+            current = ""
+        else:
+            # a single word longer than the whole line width
+            lines.append(word[:max_chars])
+            i += 1
+    if current:
+        lines.append(current)
+    if i < len(words) and lines:
+        last = lines[-1]
+        if len(last) > max_chars - 3:
+            last = last[:max_chars - 3]
+        lines[-1] = last + "..."
+    return lines
 
 
 def draw_now_playing(title, chapter_title, chapter_index, chapter_count,
                       position, duration, is_paused, volume, battery):
     fb.fill(BLACK)
-    text_scaled(title[:MAX_CHARS_PER_ROW], 8, 12, WHITE, TEXT_SCALE)
 
+    title_lines = wrap_text(title, MAX_CHARS_PER_ROW, max_lines=2)
+    y = 8
+    for line in title_lines:
+        text_scaled(line, 8, y, WHITE, TEXT_SCALE)
+        y += 18
+
+    chapter_y = y + 10
     ch_line = "Ch {}/{}: {}".format(chapter_index + 1, max(chapter_count, 1), chapter_title)
-    text_scaled(ch_line[:MAX_CHARS_PER_ROW], 8, 46, DIM, TEXT_SCALE)
+    text_scaled(ch_line[:MAX_CHARS_PER_ROW], 8, chapter_y, DIM, TEXT_SCALE)
 
-    bar_y = 92
+    bar_y = chapter_y + 34
     bar_h = 16
     bar_w = WIDTH - 16
     fb.rect(8, bar_y, bar_w, bar_h, DIM)
@@ -168,6 +213,7 @@ print("Ready, listening for screen updates...")
 draw_splash()
 was_ready = False
 rx_buf = b""
+bt_rx_buf = b""
 while True:
     is_ready = ready_pin.value() == 1
     if is_ready and not was_ready:
@@ -209,6 +255,21 @@ while True:
                     )
                 elif cmd == "BACKLIGHT":
                     set_backlight(int(parts[1]))
+                elif cmd == "BTAT":
+                    # Relay an AT command from the Pi out to the BT module.
+                    # parts[1] is the raw command text, e.g. "AT+GMR?"
+                    bt_uart.write((parts[1] + "\r\n").encode())
             except Exception as e:
                 print("Error handling message:", e)
+
+    # Relay anything the BT module sends back to the Pi, tagged so
+    # display.py can tell it apart from its own screen-update traffic.
+    if bt_uart.any():
+        bt_rx_buf += bt_uart.read()
+        while b"\n" in bt_rx_buf:
+            resp_line, bt_rx_buf = bt_rx_buf.split(b"\n", 1)
+            resp_text = resp_line.decode().strip()
+            if resp_text:
+                uart.write(("BTRESP|" + resp_text + "\n").encode())
+
     time.sleep_ms(10)
