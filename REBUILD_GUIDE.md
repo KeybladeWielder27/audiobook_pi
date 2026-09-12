@@ -1,44 +1,38 @@
-# Audiobook Player Rebuild Guide — Pi Zero W
+# Audiobook Player Rebuild Guide
 
-Complete setup from a blank SD card to a fully working device. This
-consolidates every fix and lesson learned during the original build on a
-Pi Zero 2 W — no need to repeat any of that troubleshooting here.
+Complete setup from blank SD card / fresh RP2040 to a fully working device.
+This is a **two-board system**:
 
-## Before you start: the one critical difference
+- **Raspberry Pi** — runs the actual player app (library, playback, buttons,
+  audio, battery). Currently a Pi Zero W (original), but everything here
+  applies identically to a Zero 2 W — same GPIO header, same pin numbers,
+  no wiring changes needed either way.
+- **RP2040 Zero** — a display co-processor. It owns the TFT screen and
+  backlight entirely and renders everything itself; the Pi never touches
+  the display directly. They talk over a simple UART link.
 
-**The original Pi Zero W cannot run 64-bit Raspberry Pi OS.** It uses the
-older ARM11 (ARMv6) processor; only the Zero 2 W's quad-core Cortex-A53
-supports 64-bit. If you have your old SD card from the Zero 2 W, it will
-**not boot** on this board — you need a fresh 32-bit image regardless of
-whether the card itself still works.
-
-The GPIO header and pin numbering are identical between the two boards, so
-none of your wiring needs to change. Just expect things to feel slower
-overall — boot time, menu responsiveness, everything — since this is a
-single-core ARM11 @ 1GHz instead of a quad-core Cortex-A53 @ 1GHz. That's
-expected, not a bug to chase.
+If you're moving to new Pi hardware (e.g. Zero W → Zero 2 W), you only need
+**Part A**. The RP2040 side is untouched — it doesn't know or care which Pi
+is talking to it.
 
 ---
 
-## Phase 1 — Flash the OS
+## Part A — Raspberry Pi Setup
 
-1. Download **Raspberry Pi Imager** on your computer.
-2. Insert a microSD card (16GB+, Class 10/A1 or better).
-3. In Imager:
-   - **Device**: Raspberry Pi Zero W
-   - **OS**: Raspberry Pi OS Lite **(32-bit)** — this is the critical
-     choice; 64-bit will not boot on this board
+### A1 — Flash the OS
+
+1. Download **Raspberry Pi Imager**.
+2. In Imager:
+   - **Device**: your board (Zero W or Zero 2 W)
+   - **OS**: Raspberry Pi OS Lite. **If using the original Zero W, you must
+     pick the 32-bit build** — it cannot boot 64-bit at all (older ARMv6
+     CPU). A Zero 2 W can use either; 64-bit is fine there.
    - **Storage**: your SD card
-4. Click the gear icon before writing and set:
-   - Hostname (e.g. `audiobookpi`)
-   - Enable SSH with password auth (or your public key)
-   - Wi-Fi SSID/password
-   - Locale/timezone/keyboard layout
-5. Write the image and boot the Pi.
+3. Before writing, set hostname, SSH (password or key), Wi-Fi, locale via
+   the gear icon.
+4. Write and boot.
 
-## Phase 2 — Base system setup
-
-SSH in once it's up (give it a minute or two longer than the Zero 2 W took):
+### A2 — Base system setup
 
 ```bash
 ssh <username>@audiobookpi.local
@@ -46,76 +40,64 @@ sudo apt update && sudo apt full-upgrade -y
 sudo raspi-config
 ```
 
-In `raspi-config` → **Interface Options**, enable both:
-- **SPI** (for the display)
+In `raspi-config` → **Interface Options**, enable:
 - **I2C** (for the battery monitor)
+- **Serial Port** → "login shell over serial?" **No**, "serial hardware
+  enabled?" **Yes** (this frees GPIO14/15 for the RP2040 UART link instead
+  of a login console)
 
-Reboot, then SSH back in and install everything needed:
+Note: **SPI does not need to be enabled** — the Pi no longer drives any
+display hardware directly.
+
+Reboot, then install dependencies:
 
 ```bash
 sudo apt install -y python3-pip python3-venv python3-dev \
-  libjpeg-dev zlib1g-dev libfreetype6-dev fonts-dejavu-core \
+  libjpeg-dev zlib1g-dev libfreetype6-dev \
   mpv libmpv-dev git ffmpeg alsa-utils \
   pipewire pipewire-audio wireplumber \
   swig liblgpio-dev i2c-tools
 ```
 
-Enable persistent logging (worth having if anything ever needs debugging):
+Enable persistent logging and linger (needed for headless PipeWire/audio):
 
 ```bash
 sudo mkdir -p /var/log/journal
 sudo systemctl restart systemd-journald
-```
-
-Enable linger so PipeWire/audio come up on boot without needing a login session:
-
-```bash
 sudo loginctl enable-linger $USER
 ```
 
-Set up the Python environment:
+Set up the Python environment. Note the dependency list is shorter than
+you might expect — since the Pi no longer drives a display, it needs no
+display libraries (`luma`, `spidev`, `RPi.GPIO`) at all, just:
 
 ```bash
 mkdir -p ~/audiobook-player && cd ~/audiobook-player
 python3 -m venv venv
 source venv/bin/activate
-pip install luma.lcd gpiozero python-mpv mutagen Pillow spidev RPi.GPIO lgpio smbus2
+pip install gpiozero python-mpv mutagen Pillow lgpio smbus2 pyserial
 ```
 
-If `lgpio` fails to build, this fixes it:
+If `lgpio` fails to build:
 ```bash
 sudo apt install -y python3-lgpio
 ```
 
-## Phase 3 — Wi-Fi toggle permission
-
-The Settings screen's Wi-Fi toggle needs passwordless `sudo` for just the
-`rfkill` command:
+### A3 — Wi-Fi toggle permission
 
 ```bash
-which rfkill   # note the path, usually /usr/sbin/rfkill
+which rfkill
 sudo visudo -f /etc/sudoers.d/audiobook-wifi
 ```
-
-Add this line (adjust the path if `which rfkill` gave something different):
+Add (adjusting the path if different):
 ```
 pi ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
 ```
 
-## Phase 4 — Wiring
+### A4 — Wiring (Pi side only)
 
-Move all your existing wiring over unchanged — same GPIO numbers, same
-physical pins. Reference table:
-
-**TFT Display (SPI0):**
-| Function | GPIO | Physical pin |
-|---|---|---|
-| MOSI | GPIO10 | 19 |
-| SCLK | GPIO11 | 23 |
-| CS (CE0) | GPIO8 | 24 |
-| DC | GPIO24 | 18 |
-| RST | GPIO25 | 22 |
-| Backlight (PWM) | GPIO12 | 32 |
+The Pi's job is now just: buttons, haptics, battery sensing, audio DAC,
+and the UART link to the RP2040.
 
 **Buttons** (each wired to GND, internal pull-ups):
 | Button | GPIO | Physical pin |
@@ -144,8 +126,7 @@ flyback diode across motor terminals (cathode to +, anode to −).
 
 Voltage divider: Battery+ → 10kΩ → junction → 20kΩ → GND, junction → ADS1115 AIN0.
 
-**Audio (PCM5102A I2S DAC)** — the Pi's I2S hardware is fixed to these
-exact pins, which is why Select/Down were moved off them above:
+**Audio (PCM5102A I2S DAC):**
 | PCM5102A Pin | Connects to |
 |---|---|
 | VCC | 3.3V |
@@ -153,100 +134,81 @@ exact pins, which is why Select/Down were moved off them above:
 | BCK | GPIO18 (physical pin 12) |
 | LCK | GPIO19 (physical pin 35) |
 | DIN | GPIO21 (physical pin 40) |
-| SCK | GND (ties the chip to its internal PLL clock) |
+| SCK | GND |
 
 Add to `/boot/firmware/config.txt`:
 ```
 dtparam=audio=off
 dtoverlay=hifiberry-dac
 ```
+**Also uncomment `#dtparam=i2s=on`** near the top of the file (remove the
+`#`). Easy to miss, and the failure mode is silent: without it, the codec
+overlay has no I2S hardware to attach to, and `dmesg` shows nothing at all.
 
-**Also uncomment the existing `#dtparam=i2s=on` line near the top of the
-file** (remove the `#`). This is easy to miss and causes a specific,
-confusing failure: the `hifiberry-dac` overlay tells the system *which
-codec* to use, but `dtparam=i2s=on` is what enables the I2S hardware
-interface itself. Without it, the codec driver never even gets a chance to
-probe, and `dmesg` will show zero related messages at all — the overlay
-sits there in the config file doing nothing.
+Reboot, then verify with `aplay -l` (should show `sndrpihifiberry`) and
+`wpctl status` (should appear as a sink).
 
-Reboot after saving. Verify with `aplay -l` (should show `sndrpihifiberry`)
-and `wpctl status` (should appear as a sink and become default).
+**UART link to RP2040:**
+| Pi Pin | RP2040 Pin |
+|---|---|
+| GPIO14 / TXD (physical pin 8) | GP1 (RX) |
+| GPIO15 / RXD (physical pin 10) | GP0 (TX) |
+| GND | GND |
 
-## Phase 5 — Deploy the code
+**Ready signal to RP2040** (tells the RP2040 whether `player.py` is
+actually running, vs. mid-boot or crashed):
+| Pi Pin | RP2040 Pin |
+|---|---|
+| GPIO24 (physical pin 18) | GP8 |
 
-Download and unzip the attached `audiobook-player.zip`, then copy the whole
-folder to the Pi:
+### A5 — Deploy the code
 
+Clone from your GitHub repo (preferred, since it's now version-controlled):
 ```bash
-scp -r audiobook-player <username>@audiobookpi.local:~/
+git clone <your-repo-url> ~/audiobook-player-src
+cp -r ~/audiobook-player-src/pi/* ~/audiobook-player/
 ```
-
-Re-activate the venv and confirm imports work:
+Or `scp` the `pi/` folder directly if you're not using git for this yet.
 
 ```bash
 cd ~/audiobook-player
 source venv/bin/activate
-python -c "import luma.lcd, gpiozero, mpv, mutagen, PIL, RPi.GPIO, lgpio, smbus2; print('all imports OK')"
+python -c "import gpiozero, mpv, mutagen, PIL, lgpio, smbus2, serial; print('all imports OK')"
 ```
 
-## Phase 6 — Isolated hardware tests
-
-Test each piece before trusting the full app, same as the original build:
+### A6 — Isolated hardware tests
 
 ```bash
-python test_display_tft.py   # should show colored shapes, text, moving box
+python test_uart.py          # sends PING, expect PONG back from the RP2040
 python test_buttons.py       # press each button, confirm correct name prints
 python test_haptics.py       # should feel 3 buzzes then a quick double-click
 python test_battery.py       # should show voltage close to a multimeter reading
 ```
 
-Fix anything that doesn't check out here before moving on — much easier to
-debug one piece at a time than inside the full app.
+(Display is no longer tested from the Pi at all — that happens on the
+RP2040 side, see Part B.)
 
-## Phase 7 — Set up audiobooks and confirm playback
+### A7 — Set up audiobooks and confirm playback
 
 ```bash
 mkdir -p ~/audiobook-player/audiobooks
 ```
-
-Copy at least one `.m4b` or `.mp3` file in (via `scp`), then:
-
+Copy in at least one `.m4b`/`.mp3`, then:
 ```bash
 python player.py
 ```
+Watch the RP2040's screen (not the Pi) — you should see the Main Menu.
+Confirm library browsing, playback, and audio through the DAC.
 
-Confirm you see the Main Menu, can open the library, play a book, and hear
-audio through the PCM5102A DAC.
+### A8 — Autostart service
 
-## Phase 8 — Boot splash service
-
-```bash
-sudo nano /etc/systemd/system/audiobook-splash.service
-```
-
-```ini
-[Unit]
-Description=Audiobook Player Boot Splash
-DefaultDependencies=no
-After=local-fs.target
-Before=audiobook-player.service
-
-[Service]
-Type=oneshot
-ExecStartPre=/bin/sleep 2
-ExecStart=/home/pi/audiobook-player/venv/bin/python /home/pi/audiobook-player/splash.py
-RemainAfterExit=no
-
-[Install]
-WantedBy=sysinit.target
-```
-
-## Phase 9 — Main player autostart service
+No boot-splash service is needed anymore — the RP2040 shows its own
+"waiting..." splash automatically whenever the ready signal is low,
+including during the entire Pi boot process before `player.py` starts.
 
 ```bash
 sudo nano /etc/systemd/system/audiobook-player.service
 ```
-
 ```ini
 [Unit]
 Description=Audiobook Player
@@ -265,39 +227,83 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 ```
-
-(If your username isn't `pi`, update `User=` and every `/home/pi/...` path
-in both service files above.)
-
-Enable both and do a full cold-boot test:
+(Adjust `User=`/paths if your username isn't `pi`.)
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable audiobook-splash.service
 sudo systemctl enable audiobook-player.service
 sudo reboot
 ```
 
-Watch the display through the whole boot: splash screen should appear
-within a couple seconds, hold through the slower audio/network startup,
-then the Main Menu should take over automatically with no login needed.
+### A9 — Boot time optimization (optional but recommended)
 
-## Phase 10 — Final checklist
+Two safe, permanent fixes that took total boot time from ~2:47 to ~2:10 on
+a Zero W (should help proportionally on any Pi):
 
-**Before you get here**: avoid opening the Settings screen while you're
-still debugging buttons or wiring. A stray/erratic button press during
-unrelated hardware debugging can accidentally toggle Wi-Fi off — and unlike
-most app state, that block is saved by the OS itself and persists across
-reboots, potentially locking you out of SSH access with no easy way back in
-except a monitor and keyboard plugged in directly. Confirm buttons behave
-correctly first, then it's safe to explore Settings.
+```bash
+sudo apt purge cloud-init -y
+sudo rm -rf /etc/cloud /var/lib/cloud
+sudo systemctl mask rpi-resize-swap-file.service
+sudo reboot
+```
 
-- [ ] Main Menu appears on boot with no manual steps
+---
+
+## Part B — RP2040 Display Co-Processor Setup
+
+Only needed once — this board doesn't change when you swap Pi hardware.
+Skip this whole part if the RP2040 is already flashed and working.
+
+### B1 — Flash MicroPython
+
+1. Download the RP2040/Pico MicroPython `.uf2` from micropython.org.
+2. Hold BOOTSEL, plug in via USB, release — it appears as a drive `RPI-RP2`.
+3. Drag the `.uf2` onto it. It reboots automatically.
+4. Install **Thonny** (thonny.org), connect to the board (MicroPython
+   Raspberry Pi Pico interpreter), confirm the REPL responds.
+
+### B2 — Wiring (RP2040 side)
+
+**TFT display:**
+| TFT Pin | RP2040 Pin |
+|---|---|
+| VCC | 3.3V |
+| GND | GND |
+| DIN (MOSI) | GP3 |
+| CLK (SCLK) | GP2 |
+| CS | GP5 |
+| DC | GP4 |
+| RST | GP6 |
+| BL (backlight) | GP7 |
+
+**UART + ready signal to Pi:** see Part A4 above (GP0/GP1/GP8).
+
+### B3 — Upload firmware
+
+Via Thonny, upload these files to the RP2040's root filesystem:
+- `main.py` (runs automatically on boot)
+- `st7789_mini.py`
+- `sprite_frame1.bin`, `sprite_frame2.bin`, `sprite_frame3.bin`
+
+Power cycle. You should see the animated splash screen immediately, even
+with no Pi connected — that's the RP2040 operating independently while it
+waits for a ready signal.
+
+---
+
+## Final Checklist
+
+**Before you get here**: avoid opening the Settings screen while still
+debugging buttons/wiring — a stray button press can toggle Wi-Fi off, and
+that block persists across reboots via the OS itself, potentially locking
+you out of SSH with no easy recovery except physical access.
+
+- [ ] RP2040 shows the animated splash screen on its own at power-up
+- [ ] Main Menu appears within a few seconds of `player.py` starting
 - [ ] Audiobooks play, chapters navigate, resume works
-- [ ] Volume, skip forward/back work and are adjustable in Settings
+- [ ] Volume, skip forward/back adjustable in Settings
 - [ ] Backlight brightness adjustable in Settings
 - [ ] Battery percentage shows on Now Playing and in Settings
 - [ ] Haptic buzz on every button press
 - [ ] Wi-Fi toggle in Settings actually disables/enables the radio
-
-If everything on that list checks out, you're fully back up and running.
+- [ ] Splash reappears if you stop `player.py` (Ctrl+C or service stop)
