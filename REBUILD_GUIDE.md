@@ -116,15 +116,19 @@ and the UART link to the RP2040.
 transistor emitter → GND; transistor collector → motor −; motor + → 3.3V;
 flyback diode across motor terminals (cathode to +, anode to −).
 
-**Battery monitor (ADS1115 at I2C address 0x48):**
+**Battery monitor (INA226 at I2C address 0x40)** — wired in-line with the
+battery's power path (like a real ammeter), not tapped off a divider:
 | Pin | Connects to |
 |---|---|
-| VDD | 3.3V |
+| VIN+ | Battery+ |
+| VIN- | Load (Pi/boost converter power input) |
+| VCC | 3.3V |
 | GND | GND |
 | SDA | GPIO2 (pin 3) |
 | SCL | GPIO3 (pin 5) |
 
-Voltage divider: Battery+ → 10kΩ → junction → 20kΩ → GND, junction → ADS1115 AIN0.
+No voltage divider needed — the INA226 senses bus voltage directly up to
+36V, independent of its own 3.3V supply.
 
 **Audio (PCM5102A I2S DAC):**
 | PCM5102A Pin | Connects to |
@@ -174,7 +178,17 @@ Clone from your GitHub repo (preferred, since it's now version-controlled):
 git clone <your-repo-url> ~/audiobook-player-src
 cp -r ~/audiobook-player-src/pi/* ~/audiobook-player/
 ```
-Or `scp` the `pi/` folder directly if you're not using git for this yet.
+
+**Whichever method you use, verify it actually landed** before trusting
+it — we hit repeated cases during development where a copy silently
+didn't take (wrong path, stale terminal state, etc.), producing very
+confusing "the fix doesn't work" symptoms that were really "the fix never
+arrived." A quick sanity check after any deploy:
+```bash
+grep SCREEN_SLEEP_TIMEOUT_SECONDS ~/audiobook-player/config.py
+```
+If that prints nothing, the copy didn't work — recheck paths before
+debugging anything else.
 
 ```bash
 cd ~/audiobook-player
@@ -282,7 +296,7 @@ Skip this whole part if the RP2040 is already flashed and working.
 | RST | GP6 |
 | BL (backlight) | GP7 |
 
-**UART + ready signal to Pi:** see Part A4 above (GP0/GP1/GP8).
+**UART link to Pi:** see Part A4 above (GP0/GP1). **Ready signal:** GP10 (not GP8 — that pin was reassigned to the BT bridge's UART1 if you build that; see B4).
 
 ### B3 — Upload firmware
 
@@ -313,8 +327,17 @@ and reads responses over the *existing* Pi↔RP2040 link; the RP2040 firmware
 relays them to/from the module transparently.
 
 Verify the default baud rate in `main.py`'s `bt_uart = UART(1, ...)` line
-matches your specific module (9600 is a common default for this class of
-device, but confirm against your module's documentation).
+matches your specific module (9600 is the documented default for the
+KCX_BT_EMITTER; other modules in this family may differ — e.g. a
+KCX_BT_RTX variant we tested used 115200).
+
+**Level shifter warning, learned the hard way**: make sure you're using a
+genuine bidirectional TTL-to-TTL logic level converter (e.g. HW-221 or a
+generic BSS138-based board with separate HV/LV power pins) — **not** an
+RS232-to-TTL converter (e.g. a MAX3232-based "HW-027" board). They look
+similarly generic but do fundamentally different jobs; using the wrong
+one produces exactly this failure signature: the RP2040 successfully
+writes data out, but absolutely nothing comes back, not even garbage.
 
 ---
 
@@ -328,8 +351,17 @@ you out of SSH with no easy recovery except physical access.
 - [ ] RP2040 shows the animated splash screen on its own at power-up
 - [ ] Main Menu appears within a few seconds of `player.py` starting
 - [ ] Audiobooks play, chapters navigate, resume works
+- [ ] A book title too long to fit wraps to 2 lines instead of running off
+      (Now Playing and Library both)
+- [ ] "Loading..." screen appears briefly when opening a book
 - [ ] Volume, skip forward/back adjustable in Settings
+- [ ] Holding Up on Now Playing accelerates into continuous fast-forward
+      after ~0.6s, instead of just doing one skip
+- [ ] Next/Prev Chapter on a book with no chapter data (e.g. a plain mp3)
+      jumps ±30 minutes instead of doing nothing
 - [ ] Backlight brightness adjustable in Settings
+- [ ] Screen goes dark after 10s idle, and any button wakes it without
+      also performing that button's normal action
 - [ ] Battery percentage shows on Now Playing and in Settings
 - [ ] Haptic buzz on every button press
 - [ ] Wi-Fi toggle in Settings actually disables/enables the radio

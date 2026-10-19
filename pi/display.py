@@ -86,6 +86,10 @@ def set_backlight(percent: int):
     _send(f"BACKLIGHT|{percent}")
 
 
+def draw_loading(title: str):
+    _send(f"LOADING|{_sanitize(title)}")
+
+
 _rx_buffer = b""
 
 

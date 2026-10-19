@@ -42,6 +42,17 @@ SKIP_STEP = 5
 SKIP_MIN = 5
 SKIP_MAX = 120
 
+# --- Super fast-forward (hold Up on Now Playing) ---
+SUPER_FF_HOLD_THRESHOLD = 0.6  # seconds held before continuous fast-forward kicks in
+SUPER_FF_STEP_SECONDS = 15     # how far each jump is while holding
+SUPER_FF_INTERVAL = 0.3        # how often a jump repeats while held
+
+# --- Chapter nav fallback for books with no chapter data ---
+NO_CHAPTER_SKIP_SECONDS = 30 * 60
+
+# --- Screen sleep (backlight off after inactivity) ---
+SCREEN_SLEEP_TIMEOUT_SECONDS = 10
+
 # --- Backlight (PWM on GPIO12, freed up from the old PWM audio circuit) ---
 BACKLIGHT_GPIO = 12
 BACKLIGHT_PWM_FREQ = 1000

@@ -1,6 +1,6 @@
 """Minimal ST7789 driver for MicroPython on RP2040.
 Mirrors the exact orientation/addressing that was confirmed working on the
-Pi side: 320x240 landscape, no offset, MADCTL=0x70.
+Pi side: 320x240 landscape, no offset, MADCTL=0xB0 (180 deg flip).
 """
 from machine import Pin, SPI
 import time
@@ -38,7 +38,7 @@ class ST7789:
         self._cmd(0x11)          # sleep out
         time.sleep_ms(150)
         self._cmd(0x3A, b'\x55') # 16-bit color (RGB565)
-        self._cmd(0x36, b'\x70') # MADCTL -- matches the known-working Pi-side orientation
+        self._cmd(0x36, b'\xB0') # MADCTL 0xB0 = landscape rotated 180 deg (display mounted upside down)
         self._cmd(0x21)          # display inversion on (common requirement for this panel)
         self._cmd(0x13)          # normal display mode
         time.sleep_ms(10)

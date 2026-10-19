@@ -38,3 +38,15 @@ class InputManager:
             return self.events.get(timeout=timeout)
         except queue.Empty:
             return None
+
+    def is_held(self, name):
+        """True while the button is currently pressed down."""
+        return self._buttons[name].is_active
+
+    def held_duration(self, name):
+        """Seconds the button has been held so far, or 0.0 if not currently
+        pressed. Lets the main loop implement hold-to-repeat actions
+        (e.g. super fast-forward) without waiting for a release event."""
+        if self._buttons[name].is_active and name in self._press_times:
+            return time.monotonic() - self._press_times[name]
+        return 0.0

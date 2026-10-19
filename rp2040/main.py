@@ -200,6 +200,17 @@ def draw_splash():
     display.blit(buf)
 
 
+def draw_loading(title):
+    fb.fill(BLACK)
+    lines = wrap_text(title, MAX_CHARS_PER_ROW, max_lines=2)
+    y = 90
+    for line in lines:
+        text_scaled(line, 8, y, WHITE, TEXT_SCALE)
+        y += 18
+    text_scaled("Loading...", 8, y + 10, ACCENT, TEXT_SCALE)
+    display.blit(buf)
+
+
 def step_runner():
     global _runner_x, _runner_frame
     _runner_x -= 8
@@ -255,10 +266,14 @@ while True:
                     )
                 elif cmd == "BACKLIGHT":
                     set_backlight(int(parts[1]))
+                elif cmd == "LOADING":
+                    draw_loading(parts[1])
                 elif cmd == "BTAT":
                     # Relay an AT command from the Pi out to the BT module.
                     # parts[1] is the raw command text, e.g. "AT+GMR?"
+                    print("BTAT received from Pi:", parts[1])
                     bt_uart.write((parts[1] + "\r\n").encode())
+                    print("Wrote to bt_uart (UART1)")
             except Exception as e:
                 print("Error handling message:", e)
 
@@ -266,10 +281,12 @@ while True:
     # display.py can tell it apart from its own screen-update traffic.
     if bt_uart.any():
         bt_rx_buf += bt_uart.read()
+        print("bt_uart raw buffer so far:", bt_rx_buf)
         while b"\n" in bt_rx_buf:
             resp_line, bt_rx_buf = bt_rx_buf.split(b"\n", 1)
             resp_text = resp_line.decode().strip()
             if resp_text:
+                print("Relaying BT module response to Pi:", resp_text)
                 uart.write(("BTRESP|" + resp_text + "\n").encode())
 
     time.sleep_ms(10)

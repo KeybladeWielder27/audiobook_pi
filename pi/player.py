@@ -87,15 +87,28 @@ class App:
         self.current_book = None
         self._last_autosave = time.monotonic()
         self._last_render = 0.0
+        self._super_ff_active = False
+        self._last_super_ff_step = 0.0
+        self._screen_asleep = False
+        self._last_activity_time = time.monotonic()
 
     def _read_battery_display(self):
         return battery_monitor.format_battery(self._battery_cache)
+
+    def _sleep_screen(self):
+        self._screen_asleep = True
+        device_settings.set_backlight_brightness_raw(0)
+
+    def _wake_screen(self):
+        self._screen_asleep = False
+        device_settings.set_backlight_brightness_raw(self.settings.get_setting("backlight", 100))
 
     # --- screen transitions ---
 
     def _open_book(self, book):
         self.current_book = book
         book_state = self.state.get(book.path)
+        display.draw_loading(book.title)
         if book.kind == "multi":
             # Each file is a chapter, so the saved chapter index selects
             # which file to start on, then we seek within that file.
@@ -169,12 +182,21 @@ class App:
         if name == "play_pause":
             self.playback.toggle_pause()
         elif name == "next_chapter":
-            self.playback.next_chapter()
+            if self.current_book.chapters:
+                self.playback.next_chapter()
+            else:
+                self.playback.seek_relative(config.NO_CHAPTER_SKIP_SECONDS)
         elif name == "prev_chapter":
-            self.playback.prev_chapter()
+            if self.current_book.chapters:
+                self.playback.prev_chapter()
+            else:
+                self.playback.seek_relative(-config.NO_CHAPTER_SKIP_SECONDS)
         elif name == "up":
-            step = self.settings.get_setting("skip_forward", config.SKIP_FORWARD_SECONDS)
-            self.playback.seek_relative(step)
+            if self._super_ff_active:
+                self._super_ff_active = False  # continuous hold already moved position
+            else:
+                step = self.settings.get_setting("skip_forward", config.SKIP_FORWARD_SECONDS)
+                self.playback.seek_relative(step)
         elif name == "down":
             step = self.settings.get_setting("skip_back", config.SKIP_BACK_SECONDS)
             self.playback.seek_relative(-step)
@@ -311,8 +333,15 @@ class App:
             while True:
                 event = self.input.poll(timeout=0.1)
                 if event:
-                    haptics.pulse()
-                    self.handle_event(*event)
+                    if self._screen_asleep:
+                        self._wake_screen()  # this press only wakes the screen, nothing else
+                    else:
+                        haptics.pulse()
+                        self.handle_event(*event)
+                    self._last_activity_time = time.monotonic()
+                elif not self._screen_asleep and \
+                        time.monotonic() - self._last_activity_time > config.SCREEN_SLEEP_TIMEOUT_SECONDS:
+                    self._sleep_screen()
 
                 now = time.monotonic()
                 if now - self._last_battery_check > config.BATTERY_POLL_INTERVAL_SECONDS:
@@ -328,8 +357,15 @@ class App:
                         self.state.save()
                         self._last_autosave = now
 
+                    if not self._screen_asleep and self.input.held_duration("up") > config.SUPER_FF_HOLD_THRESHOLD:
+                        now = time.monotonic()
+                        if now - self._last_super_ff_step > config.SUPER_FF_INTERVAL:
+                            self.playback.seek_relative(config.SUPER_FF_STEP_SECONDS)
+                            self._last_super_ff_step = now
+                        self._super_ff_active = True
+
                 now = time.monotonic()
-                if event or now - self._last_render > config.RENDER_INTERVAL_SECONDS:
+                if not self._screen_asleep and (event or now - self._last_render > config.RENDER_INTERVAL_SECONDS):
                     self.render()
                     self._last_render = now
         except KeyboardInterrupt:
